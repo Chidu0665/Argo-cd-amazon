@@ -60,7 +60,12 @@ spec:
 
       containers:
         - name: amazon-app
-          image: ChiduACR.azurecr.io/amazon-app:latest
+          image: chiduacr.azurecr.io/amazon-app:latest
+
+          # ── ConfigMap environment variables ────────────
+          envFrom:
+            - configMapRef:
+                name: amazon-config
 
           ports:
             - name: http
@@ -87,7 +92,7 @@ spec:
             - name: JAVA_OPTS
               value: "-Xms256m -Xmx512m -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0"
 
-          # ── Relaxed resource limits for small cluster ──
+          # ── Resource limits ────────────────────────────
           resources:
             requests:
               cpu:    "100m"
