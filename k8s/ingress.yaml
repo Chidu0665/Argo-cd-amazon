@@ -1,0 +1,43 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: amazon-ingress
+  namespace: amazon
+  labels:
+    app: amazon-app
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    nginx.ingress.kubernetes.io/ssl-redirect:       "false"
+    nginx.ingress.kubernetes.io/proxy-body-size:     "10m"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-send-timeout:    "60"
+    nginx.ingress.kubernetes.io/proxy-read-timeout:    "60"
+    nginx.ingress.kubernetes.io/limit-rps:           "100"
+    nginx.ingress.kubernetes.io/enable-cors:         "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin:   "*"
+spec:
+  ingressClassName: nginx
+  rules:
+
+    # ── Route: nip.io domain (public access) ─────────────
+    - host: 68.155.240.53.nip.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: amazon-service
+                port:
+                  number: 8080
+
+    # ── No-host fallback (direct IP access) ──────────────
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: amazon-service
+                port:
+                  number: 8080

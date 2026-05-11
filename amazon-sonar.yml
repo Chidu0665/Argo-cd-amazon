@@ -1,0 +1,29 @@
+trigger:
+- testing
+
+pool:
+  name: Chidu-Pool
+
+steps:
+
+- task: SonarQubePrepare@7
+  inputs:
+    SonarQube: 'ado-sonar'
+    scannerMode: 'Other'
+    extraProperties: |
+      sonar.projectKey=amazon-project
+      sonar.projectName=amazon-project
+      sonar.projectVersion=1.0
+
+- task: Maven@4
+  inputs:
+    mavenPomFile: 'Amazon/pom.xml'
+    goals: 'clean verify'
+    javaHomeOption: 'Path'
+    jdkDirectory: '$(JAVA_HOME)'
+
+- task: SonarQubeAnalyze@7
+
+- task: SonarQubePublish@7
+  inputs:
+    pollingTimeoutSec: '300'

@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<web-app xmlns="http://xmlns.jcp.org/xml/ns/javaee"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://xmlns.jcp.org/xml/ns/javaee
+                             http://xmlns.jcp.org/xml/ns/javaee/web-app_4_0.xsd"
+         version="4.0">
+
+  <display-name>Amazon Web Application</display-name>
+
+  <!-- ══════════════════════════════════════════════════════════
+       Health Check Servlet
+       Used by Kubernetes Liveness, Readiness, and Startup probes
+       Endpoints:
+         /health       → full health (Grafana/monitoring)
+         /health/live  → liveness probe  (Kubernetes kills pod if DOWN)
+         /health/ready → readiness probe (Kubernetes removes from LB if DOWN)
+  ══════════════════════════════════════════════════════════ -->
+  <servlet>
+    <servlet-name>HealthCheckServlet</servlet-name>
+    <servlet-class>com.amazon.health.HealthCheckServlet</servlet-class>
+    <!-- Load on startup = 1 ensures it initialises before any request -->
+    <load-on-startup>1</load-on-startup>
+  </servlet>
+
+  <servlet-mapping>
+    <servlet-name>HealthCheckServlet</servlet-name>
+    <url-pattern>/health</url-pattern>
+  </servlet-mapping>
+
+  <servlet-mapping>
+    <servlet-name>HealthCheckServlet</servlet-name>
+    <url-pattern>/health/live</url-pattern>
+  </servlet-mapping>
+
+  <servlet-mapping>
+    <servlet-name>HealthCheckServlet</servlet-name>
+    <url-pattern>/health/ready</url-pattern>
+  </servlet-mapping>
+
+  <!-- ══════════════════════════════════════════════════════════
+       Welcome / Default page
+  ══════════════════════════════════════════════════════════ -->
+  <welcome-file-list>
+    <welcome-file>index.jsp</welcome-file>
+  </welcome-file-list>
+
+  <!-- ══════════════════════════════════════════════════════════
+       Session timeout (30 minutes)
+  ══════════════════════════════════════════════════════════ -->
+  <session-config>
+    <session-timeout>30</session-timeout>
+  </session-config>
+
+</web-app>

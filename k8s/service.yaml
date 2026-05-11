@@ -1,0 +1,55 @@
+# ── Internal ClusterIP Service (for Ingress routing) ──────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: amazon-service
+  namespace: amazon
+  labels:
+    app: amazon-app
+  annotations:
+    # Azure LoadBalancer annotations
+    service.beta.kubernetes.io/azure-load-balancer-resource-group: "Chidu-RG"
+    # Prometheus scraping via service
+    prometheus.io/scrape: "true"
+    prometheus.io/port:   "8081"
+    prometheus.io/path:   "/actuator/prometheus"
+spec:
+  type: ClusterIP          # Internal — traffic comes via Ingress
+  selector:
+    app: amazon-app
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80             # Service port exposed inside cluster
+      targetPort: 8080     # Container port
+    - name: management
+      protocol: TCP
+      port: 8081           # Actuator/Prometheus metrics
+      targetPort: 8081
+
+---
+# ── External LoadBalancer Service (direct LB access) ──────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: amazon-service-lb
+  namespace: amazon
+  labels:
+    app: amazon-app
+    type: loadbalancer
+  annotations:
+    service.beta.kubernetes.io/azure-load-balancer-resource-group: "Chidu-RG"
+    # Health probe settings for Azure LB
+    service.beta.kubernetes.io/azure-load-balancer-health-probe-request-path: "/actuator/health"
+    service.beta.kubernetes.io/azure-load-balancer-health-probe-protocol: "http"
+spec:
+  type: LoadBalancer
+  selector:
+    app: amazon-app
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 8080
+  # Preserve client source IP
+  externalTrafficPolicy: Local

@@ -1,0 +1,498 @@
+trigger:
+  branches:
+    include:
+      - testing
+  paths:
+    include:
+      - '**'
+      
+variables:
+  # ─── ACR ───────────────────────────────────────────────
+  ACR_NAME:             'ChiduACR'
+  ACR_LOGIN_SERVER:     '$(ACR_NAME).azurecr.io'
+  IMAGE_NAME:           'amazon-app'
+  IMAGE_TAG:            '$(Build.BuildId)'
+  FULL_IMAGE:           '$(ACR_LOGIN_SERVER)/$(IMAGE_NAME):$(IMAGE_TAG)'
+
+  # ─── AKS ───────────────────────────────────────────────
+  AKS_RESOURCE_GROUP:   'chidu-rg'
+  AKS_CLUSTER_NAME:     'Hydra-cluster'
+  K8S_NAMESPACE:        'amazon'
+
+  # ─── Service Connections ───────────────────────────────
+  AZURE_SERVICE_CONN:   'chidu-arm'
+  DOCKER_SERVICE_CONN:  'chidu-docker'
+  ACR_SERVICE_CONN:     'chidu-acr'
+
+  # ─── SonarQube ─────────────────────────────────────────
+  SONAR_PROJECT_KEY:    'Amazon-App'
+  SONAR_PROJECT_NAME:   'Amazon-Application'
+  SONAR_HOST_URL:       'http://20.219.37.20:9000/'   # ← replace with your SonarQube URL
+  # SONAR_TOKEN → set as a SECRET variable in Pipeline → Edit → Variables
+
+  # ─── Maven ─────────────────────────────────────────────
+  MAVEN_OPTS:           '-Xmx1024m'
+
+pool:
+  name: Chidu-new
+
+# ═══════════════════════════════════════════════════════════════════
+# STAGE 1 — FETCH SOURCE
+# ═══════════════════════════════════════════════════════════════════
+stages:
+- stage: FetchSource
+  displayName: '📥 Stage 1 — Fetch Source Code'
+  jobs:
+  - job: Checkout
+    displayName: 'Checkout & Validate Repository'
+    steps:
+
+    - checkout: self
+      displayName: 'Checkout source from Azure Repos'
+      fetchDepth: 0
+
+    - script: |
+        echo "========================================"
+        echo " PIPELINE TRIGGERED"
+        echo " Branch   : $(Build.SourceBranch)"
+        echo " Commit   : $(Build.SourceVersion)"
+        echo " Build ID : $(Build.BuildId)"
+        echo " Triggered by: $(Build.RequestedFor)"
+        echo "========================================"
+        echo "Repository structure:"
+        ls -la
+        echo ""
+        echo "Maven project files:"
+        find . -name "pom.xml" | head -20
+      displayName: 'Print build info & validate structure'
+
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish source as pipeline artifact'
+      inputs:
+        targetPath: '$(Pipeline.Workspace)/s'
+        artifact: 'source-code'
+        publishLocation: 'pipeline'
+
+
+# ═══════════════════════════════════════════════════════════════════
+# STAGE 2 — SONARQUBE ANALYSIS
+# ═══════════════════════════════════════════════════════════════════
+- stage: SonarQube
+  displayName: '🔍 Stage 2 — SonarQube Code Analysis'
+  dependsOn: FetchSource
+  condition: succeeded()
+  jobs:
+  - job: SonarScan
+    displayName: 'SonarQube Static Analysis'
+    steps:
+
+    - checkout: self
+      fetchDepth: 0
+
+    # SonarQubePrepare, SonarQubeAnalyze, SonarQubePublish are ALL removed.
+    # The ADO SonarQube extension always injects sonar.branch.name which
+    # Community Edition rejects. Maven sonar:sonar goal is used directly instead,
+    # with all properties passed as -D flags to fully bypass the extension.
+
+    - task: Maven@3
+      displayName: 'Maven build + SonarQube scan'
+      inputs:
+        mavenPomFile: '$(Build.SourcesDirectory)/Amazon/pom.xml'
+        goals: 'clean install sonar:sonar'
+        options: >-
+          -DskipTests
+          -Dsonar.projectKey=$(SONAR_PROJECT_KEY)
+          -Dsonar.projectName=$(SONAR_PROJECT_NAME)
+          -Dsonar.projectVersion=$(Build.BuildId)
+          -Dsonar.host.url=$(SONAR_HOST_URL)
+          -Dsonar.token=$(SONAR_TOKEN)
+          -Dsonar.java.binaries=target/classes
+        publishJUnitResults: false
+        javaHomeOption: 'JDKVersion'
+      env:
+        MAVEN_OPTS: '-Xmx1024m'
+
+    - script: |
+        echo "SonarQube analysis completed."
+        echo "Check your SonarQube dashboard for detailed results."
+        echo "Project: $(SONAR_PROJECT_NAME)"
+        echo "Dashboard: $(SONAR_HOST_URL)/dashboard?id=$(SONAR_PROJECT_KEY)"
+      displayName: 'SonarQube summary'
+
+
+# ═══════════════════════════════════════════════════════════════════
+# STAGE 3 — MAVEN BUILD & STORE ARTIFACT IN ACR
+# ═══════════════════════════════════════════════════════════════════
+- stage: MavenBuild
+  displayName: '🔨 Stage 3 — Maven Build & Store in ACR'
+  dependsOn: SonarQube
+  condition: succeeded()
+  jobs:
+  - job: Build
+    displayName: 'Maven Build — Package JAR/WAR'
+    steps:
+
+    - checkout: self
+
+    - task: Maven@3
+      displayName: 'Maven clean package (skip tests)'
+      inputs:
+        mavenPomFile: '$(Build.SourcesDirectory)/Amazon/pom.xml'
+        goals: 'clean package'
+        options: '-DskipTests'
+        publishJUnitResults: false
+        javaHomeOption: 'JDKVersion'
+        mavenVersionOption: 'Default'
+      env:
+        MAVEN_OPTS: '-Xmx1024m'
+
+    - task: Maven@3
+      displayName: 'Maven test — run unit tests'
+      inputs:
+        mavenPomFile: '$(Build.SourcesDirectory)/Amazon/pom.xml'
+        goals: 'test'
+        publishJUnitResults: true
+        testResultsFiles: '**/surefire-reports/TEST-*.xml'
+        javaHomeOption: 'JDKVersion'
+      continueOnError: true
+      env:
+        MAVEN_OPTS: '-Xmx1024m'
+
+    - script: |
+        echo "Build artifacts:"
+        find . -name "*.jar" -o -name "*.war" | grep target
+      displayName: 'List build artifacts'
+
+    - task: CopyFiles@2
+      displayName: 'Copy JAR/WAR to staging directory'
+      inputs:
+        SourceFolder: '$(System.DefaultWorkingDirectory)'
+        Contents: |
+          **/target/*.jar
+          **/target/*.war
+          Dockerfile
+          k8s/**
+        TargetFolder: '$(Build.ArtifactStagingDirectory)'
+
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish build artifact to Azure Pipelines'
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+        ArtifactName: 'maven-artifact'
+        publishLocation: 'Container'
+
+    - task: AzureCLI@2
+      displayName: 'Login to ACR and tag build metadata'
+      inputs:
+        azureSubscription: '$(AZURE_SERVICE_CONN)'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          az acr login --name $(ACR_NAME)
+          echo "Build $(Build.BuildId) artifact stored. Image will be pushed in Stage 5."
+          echo "ACR: $(ACR_LOGIN_SERVER)"
+          echo "Image will be: $(FULL_IMAGE)"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# STAGE 4 — BUILD DOCKER IMAGE
+# ═══════════════════════════════════════════════════════════════════
+- stage: DockerBuild
+  displayName: '🐳 Stage 4 — Build Docker Image'
+  dependsOn: MavenBuild
+  condition: succeeded()
+  jobs:
+  - job: DockerImageBuild
+    displayName: 'Build Docker Image'
+    steps:
+
+    - checkout: self
+
+    - task: DownloadBuildArtifacts@1
+      displayName: 'Download maven build artifact'
+      inputs:
+        buildType: 'current'
+        downloadType: 'single'
+        artifactName: 'maven-artifact'
+        downloadPath: '$(System.ArtifactsDirectory)'
+
+    - script: |
+        echo "Copying artifact to workspace for Docker build..."
+        cp -r $(System.ArtifactsDirectory)/maven-artifact/* .
+        echo "Files available for Docker build:"
+        ls -la
+        find . -name "*.jar" -o -name "*.war" | grep target
+      displayName: 'Prepare files for Docker build'
+
+    - task: Docker@2
+      displayName: 'Build Docker image'
+      inputs:
+        containerRegistry: '$(ACR_SERVICE_CONN)'
+        repository: '$(IMAGE_NAME)'
+        command: 'build'
+        Dockerfile: '$(Build.SourcesDirectory)/Amazon/Dockerfile'
+        buildContext: '$(System.DefaultWorkingDirectory)'
+        tags: |
+          $(IMAGE_TAG)
+          latest
+        arguments: '--no-cache --label "build.id=$(Build.BuildId)" --label "build.branch=$(Build.SourceBranchName)" --label "build.commit=$(Build.SourceVersion)"'
+
+    - script: |
+        echo "Docker image built successfully:"
+        docker images | grep $(IMAGE_NAME)
+      displayName: 'Verify Docker image was built'
+# ═══════════════════════════════════════════════════════════════════
+# STAGE 5 — TRIVY IMAGE SECURITY SCAN (FINAL FIX)
+# ═══════════════════════════════════════════════════════════════════
+- stage: TrivyScan
+  displayName: '🐳 Stage 5 — Trivy Scan'
+  dependsOn: DockerBuild
+  condition: succeeded()
+
+  jobs:
+  - job: DockerImageBuild
+    displayName: 'Build + Scan Docker Image'
+
+    steps:
+    - checkout: self
+
+    # Download artifact
+    - task: DownloadBuildArtifacts@1
+      displayName: 'Download maven build artifact'
+      inputs:
+        buildType: 'current'
+        downloadType: 'single'
+        artifactName: 'maven-artifact'
+        downloadPath: '$(System.ArtifactsDirectory)'
+
+    # Prepare files
+    - script: |
+        cp -r $(System.ArtifactsDirectory)/maven-artifact/* .
+        echo "Artifacts ready"
+      displayName: 'Prepare files for Docker build'
+
+    # ✅ Build LOCAL image (IMPORTANT FIX)
+    - task: Docker@2
+      displayName: 'Build Docker image (LOCAL)'
+      inputs:
+        command: build
+        repository: $(IMAGE_NAME)
+        Dockerfile: '$(Build.SourcesDirectory)/Amazon/Dockerfile'
+        buildContext: '$(System.DefaultWorkingDirectory)'
+        tags: |
+          $(IMAGE_TAG)
+          latest
+
+    # ✅ Verify image
+    - script: |
+        echo "==== LOCAL IMAGES ===="
+        docker images | grep $(IMAGE_NAME)
+      displayName: 'Verify Docker image'
+
+    # ✅ Install Trivy (FIXED PERMISSION ISSUE)
+    - script: |
+        curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+        | sh -s -- -b .
+        chmod +x ./trivy
+        ./trivy --version
+      displayName: 'Install Trivy'
+
+    # ✅ Scan LOCAL image (CORRECT)
+    - script: |
+        echo "Scanning: $(IMAGE_NAME):$(IMAGE_TAG)"
+        ./trivy image \
+          --exit-code 0 \
+          --severity HIGH,CRITICAL \
+          --no-progress \
+          --scanners vuln \
+          $(IMAGE_NAME):$(IMAGE_TAG)
+      displayName: 'Trivy Scan'
+
+# ═══════════════════════════════════════════════════════════════════
+# STAGE 6 — PUSH TO ACR
+# ═══════════════════════════════════════════════════════════════════
+- stage: PushToACR
+  displayName: '📤 Stage 6 — Push Docker Image to ACR'
+  dependsOn: TrivyScan
+  condition: succeeded()
+  jobs:
+  - job: PushImage
+    displayName: 'Push Image to Azure Container Registry'
+    steps:
+
+    - checkout: none
+
+    - task: Docker@2
+      displayName: 'Push image to ACR — build tag'
+      inputs:
+        containerRegistry: '$(ACR_SERVICE_CONN)'
+        repository: '$(IMAGE_NAME)'
+        command: 'push'
+        tags: |
+          $(IMAGE_TAG)
+          latest
+
+    - task: AzureCLI@2
+      displayName: 'Verify image in ACR & print digest'
+      inputs:
+        azureSubscription: '$(AZURE_SERVICE_CONN)'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          echo "Verifying image in ACR..."
+          az acr repository show-tags \
+            --name $(ACR_NAME) \
+            --repository $(IMAGE_NAME) \
+            --output table
+
+          DIGEST=$(az acr repository show \
+            --name $(ACR_NAME) \
+            --image $(IMAGE_NAME):$(IMAGE_TAG) \
+            --query digest -o tsv)
+
+          echo "Image pushed successfully!"
+          echo "Full image: $(FULL_IMAGE)"
+          echo "Digest: $DIGEST"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# STAGE 7 — DEPLOY TO AKS (via Ingress + LB)
+# ═══════════════════════════════════════════════════════════════════
+- stage: DeployToAKS
+  displayName: '🚀 Stage 7 — Deploy to AKS'
+  dependsOn: PushToACR
+  condition: succeeded()
+  jobs:
+  - deployment: DeployAmazonApp
+    displayName: 'Deploy Amazon App to AKS'
+    environment: 'amazon-aks-$(K8S_NAMESPACE)'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+
+          - checkout: self
+
+          - task: KubectlInstaller@0
+            displayName: 'Install kubectl'
+            inputs:
+              kubectlVersion: 'latest'
+
+          - task: AzureCLI@2
+            displayName: 'Deploy to AKS'
+            inputs:
+              azureSubscription: '$(AZURE_SERVICE_CONN)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                set -e
+
+                echo "--- kubectl version ---"
+                kubectl version --client
+
+                echo "========================================"
+                echo " STEP 1 — Get AKS credentials"
+                echo "========================================"
+                az aks get-credentials \
+                  --resource-group $(AKS_RESOURCE_GROUP) \
+                  --name $(AKS_CLUSTER_NAME) \
+                  --overwrite-existing
+                kubectl get nodes
+
+                echo ""
+                echo "========================================"
+                echo " STEP 2 — Create namespace"
+                echo "========================================"
+                kubectl create namespace $(K8S_NAMESPACE) \
+                  --dry-run=client -o yaml | kubectl apply -f -
+
+                echo ""
+                echo "========================================"
+                echo " STEP 3 — Create ACR pull secret"
+                echo "========================================"
+                kubectl delete secret acr-secret \
+                  --namespace $(K8S_NAMESPACE) \
+                  --ignore-not-found
+
+                ACR_USERNAME=$(az acr credential show \
+                  --name $(ACR_NAME) \
+                  --query "username" -o tsv)
+                ACR_PASSWORD=$(az acr credential show \
+                  --name $(ACR_NAME) \
+                  --query "passwords[0].value" -o tsv)
+
+                echo "ACR Server  : $(ACR_LOGIN_SERVER)"
+                echo "ACR Username: $ACR_USERNAME"
+
+                kubectl create secret docker-registry acr-secret \
+                  --namespace $(K8S_NAMESPACE) \
+                  --docker-server=$(ACR_LOGIN_SERVER) \
+                  --docker-username=$ACR_USERNAME \
+                  --docker-password=$ACR_PASSWORD
+
+                kubectl get secret acr-secret --namespace $(K8S_NAMESPACE)
+
+                echo ""
+                echo "========================================"
+                echo " STEP 4 — Inject image tag"
+                echo "========================================"
+                echo "Image: $(FULL_IMAGE)"
+                sed -i "s|your-acr-name.azurecr.io/amazon-app:latest|$(FULL_IMAGE)|g" \
+                  Amazon/k8s/deployment.yaml
+                grep "image:" Amazon/k8s/deployment.yaml
+
+                echo ""
+                echo "========================================"
+                echo " STEP 5 — Apply manifests"
+                echo "========================================"
+                kubectl apply -f Amazon/k8s/namespace.yaml
+                kubectl apply -f Amazon/k8s/configmap.yaml
+                kubectl apply -f Amazon/k8s/deployment.yaml
+                kubectl apply -f Amazon/k8s/service.yaml
+                kubectl apply -f Amazon/k8s/ingress.yaml
+                kubectl apply -f Amazon/k8s/hpa.yaml
+
+                echo ""
+                echo "========================================"
+                echo " STEP 6 — Wait for rollout"
+                echo "========================================"
+                kubectl rollout status deployment/amazon-deployment \
+                  -n $(K8S_NAMESPACE) --timeout=300s
+
+                echo ""
+                echo "--- Pods ---"
+                kubectl get pods -n $(K8S_NAMESPACE) -o wide
+
+                echo ""
+                echo "--- Services ---"
+                kubectl get svc -n $(K8S_NAMESPACE)
+
+                echo ""
+                echo "--- Ingress ---"
+                kubectl get ingress -n $(K8S_NAMESPACE)
+
+                echo ""
+                echo "--- HPA ---"
+                kubectl get hpa -n $(K8S_NAMESPACE)
+
+                echo ""
+                echo "========================================"
+                echo " STEP 7 — Get app URL"
+                echo "========================================"
+
+                INGRESS_IP=$(kubectl get ingress amazon-ingress \
+                  -n $(K8S_NAMESPACE) \
+                  -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+
+                if [ -n "$INGRESS_IP" ]; then
+                  echo "========================================"
+                  echo " DEPLOYMENT SUCCESSFUL"
+                  echo " Ingress IP  : $INGRESS_IP"
+                  echo " App URL     : http://$INGRESS_IP"
+                  echo " nip.io URL  : http://$INGRESS_IP.nip.io"
+                  echo " Image       : $(FULL_IMAGE)"
+                  echo "========================================"
+                else
+                  echo "Ingress IP not yet assigned — check ingress status manually."
+                  kubectl get ingress -n $(K8S_NAMESPACE)
+                fi

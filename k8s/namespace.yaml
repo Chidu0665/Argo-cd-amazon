@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: amazon
+  labels:
+    app: amazon-app
+    environment: production
+    team: devops

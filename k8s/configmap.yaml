@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: amazon-config
+  namespace: amazon
+  labels:
+    app: amazon-app
+data:
+  # Application settings
+  APP_ENV:          "production"
+  APP_PORT:         "8080"
+  LOG_LEVEL:        "INFO"
+
+  # JVM tuning
+  JAVA_OPTS:        "-Xms256m -Xmx512m -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0"
+
+  # Spring Boot Actuator endpoints (used by probes)
+  MANAGEMENT_PORT:  "8081"
+  ACTUATOR_PATH:    "/actuator"
