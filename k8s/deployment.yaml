@@ -28,14 +28,10 @@ spec:
         version: "1.0"
       annotations:
         prometheus.io/scrape: "true"
-        prometheus.io/port:   "8080"
-        prometheus.io/path:   "/health"
+        prometheus.io/port:   "80"
+        prometheus.io/path:   "/"
 
     spec:
-      # ── ACR pull secret ────────────────────────────────
-      imagePullSecrets:
-        - name: acr-secret
-
       terminationGracePeriodSeconds: 60
 
       # ── Init container ─────────────────────────────────
@@ -60,16 +56,12 @@ spec:
 
       containers:
         - name: amazon-app
-          image: chiduacr.azurecr.io/amazon-app:latest
-
-          # ── ConfigMap environment variables ────────────
-          envFrom:
-            - configMapRef:
-                name: amazon-config
+          # ── Replaced ACR image with public nginx image ──
+          image: nginx:latest
 
           ports:
             - name: http
-              containerPort: 8080
+              containerPort: 80
               protocol: TCP
 
           env:
@@ -89,30 +81,25 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
-            - name: JAVA_OPTS
-              value: "-Xms256m -Xmx512m -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0"
 
           # ── Resource limits ────────────────────────────
           resources:
             requests:
               cpu:    "100m"
-              memory: "256Mi"
+              memory: "128Mi"
             limits:
               cpu:    "500m"
-              memory: "768Mi"
+              memory: "256Mi"
 
           # ─────────────────────────────────────────────────────
           # PROBE 1 — STARTUP PROBE
-          # Checks / (root) instead of /health/live which
-          # does not exist in a plain JSP/Servlet app.
-          # Budget: 60 + (30 × 10) = 360 seconds to start.
           # ─────────────────────────────────────────────────────
           startupProbe:
             httpGet:
               path:   /
-              port:   8080
+              port:   80
               scheme: HTTP
-            initialDelaySeconds: 60
+            initialDelaySeconds: 10
             periodSeconds:       10
             timeoutSeconds:      5
             successThreshold:    1
@@ -120,13 +107,11 @@ spec:
 
           # ─────────────────────────────────────────────────────
           # PROBE 2 — LIVENESS PROBE
-          # Restarts container if app becomes unresponsive.
-          # Only activates after startupProbe succeeds.
           # ─────────────────────────────────────────────────────
           livenessProbe:
             httpGet:
               path:   /
-              port:   8080
+              port:   80
               scheme: HTTP
             initialDelaySeconds: 0
             periodSeconds:       20
@@ -136,13 +121,11 @@ spec:
 
           # ─────────────────────────────────────────────────────
           # PROBE 3 — READINESS PROBE
-          # Removes pod from LB if not ready to serve traffic.
-          # Pod is NOT restarted on failure — just deregistered.
           # ─────────────────────────────────────────────────────
           readinessProbe:
             httpGet:
               path:   /
-              port:   8080
+              port:   80
               scheme: HTTP
             initialDelaySeconds: 0
             periodSeconds:       10
@@ -159,7 +142,7 @@ spec:
             - name: tmp-dir
               mountPath: /tmp
             - name: log-dir
-              mountPath: /app/logs
+              mountPath: /var/log/nginx
 
       volumes:
         - name: tmp-dir
